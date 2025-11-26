@@ -123,7 +123,7 @@ serialized = credential.model_dump_json()
 For RSA credentials:
 
 ```py
-from iris.credentials import RSACredential
+from iris.credentials import RsaCredential
 
-deserialized = RSACredential.model_validate_json(serialized)
+deserialized = RsaCredential.model_validate_json(serialized)
 ```
