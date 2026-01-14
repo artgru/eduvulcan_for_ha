@@ -1,7 +1,9 @@
 import asyncio
 import base64
 import json
+import os
 import sys
+import time
 from getpass import getpass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
@@ -9,7 +11,6 @@ from typing import Any, Dict, Iterable, Optional
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
-CONFIG_PATH = Path("/data/options.json")
 OUTPUT_PATH = Path("/config/eduvulcan_token.json")
 LOGIN_URL = "https://eduvulcan.pl/api/ap"
 
@@ -18,36 +19,23 @@ def log(message: str) -> None:
     print(message, flush=True)
 
 
-def read_config() -> Dict[str, Any]:
-    if not CONFIG_PATH.exists():
-        return {}
-    try:
-        with CONFIG_PATH.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        if isinstance(data, dict):
-            return data
-        raise RuntimeError("Config file format is invalid")
-    except Exception as exc:
-        raise RuntimeError("Failed to read add-on configuration") from exc
+def prompt_for_credentials(login: str, password: str) -> Dict[str, str]:
+    login_value = login.strip()
+    password_value = password
 
-
-def prompt_for_credentials(config: Dict[str, Any]) -> Dict[str, str]:
-    login = (config.get("login") or "").strip()
-    password = config.get("password") or ""
-
-    if login and password:
-        return {"login": login, "password": password}
+    if login_value and password_value:
+        return {"login": login_value, "password": password_value}
 
     log("Prompting for credentials")
-    if not login:
-        login = input("Login: ").strip()
-    if not password:
+    if not login_value:
+        login_value = input("Login: ").strip()
+    if not password_value:
         try:
-            password = getpass("Password: ")
+            password_value = getpass("Password: ")
         except Exception:
-            password = input("Password: ")
+            password_value = input("Password: ")
 
-    return {"login": login, "password": password}
+    return {"login": login_value, "password": password_value}
 
 
 def is_jwt(value: Any) -> bool:
@@ -107,6 +95,75 @@ def decode_jwt_payload(jwt_token: str) -> Dict[str, Any]:
         raise RuntimeError("JWT payload is not a JSON object")
 
     return payload
+
+
+def is_payload_expired(payload: Dict[str, Any]) -> bool:
+    exp_value = payload.get("exp")
+    if exp_value is None:
+        return False
+    try:
+        exp_timestamp = float(exp_value)
+    except (TypeError, ValueError):
+        return False
+    return time.time() >= exp_timestamp
+
+
+def read_existing_token() -> Optional[Dict[str, Any]]:
+    if not OUTPUT_PATH.exists():
+        return None
+
+    try:
+        with OUTPUT_PATH.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    jwt_token = data.get("jwt")
+    if not is_jwt(jwt_token):
+        return None
+
+    payload = data.get("jwt_payload")
+    needs_write = False
+    if not isinstance(payload, dict):
+        payload = decode_jwt_payload(jwt_token)
+        needs_write = True
+
+    if is_payload_expired(payload):
+        raise RuntimeError("Stored token is expired")
+
+    tenant = data.get("tenant") or payload.get("tenant") or payload.get("Tenant")
+    if not tenant:
+        raise RuntimeError("Tenant field not found in stored JWT payload")
+
+    return {
+        "jwt": jwt_token,
+        "tenant": str(tenant),
+        "payload": payload,
+        "needs_write": needs_write,
+    }
+
+
+def remove_token_file() -> None:
+    try:
+        OUTPUT_PATH.unlink()
+    except FileNotFoundError:
+        return
+    except Exception as exc:
+        log(f"Failed to delete token file: {exc}")
+
+
+def write_token_file(jwt_token: str, tenant: str, payload: Dict[str, Any]) -> None:
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    output = {
+        "jwt": jwt_token,
+        "tenant": tenant,
+        "jwt_payload": payload,
+    }
+    with OUTPUT_PATH.open("w", encoding="utf-8") as handle:
+        json.dump(output, handle, indent=2, ensure_ascii=True)
 
 
 async def click_if_present(page, selector: str, timeout_ms: int = 1000) -> bool:
@@ -287,29 +344,7 @@ async def retrieve_jwt(login: str, password: str) -> str:
         return jwt_token
 
 
-def write_token_file(jwt_token: str, tenant: str, payload: Dict[str, Any]) -> None:
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    output = {
-        "jwt": jwt_token,
-        "tenant": tenant,
-        "jwt_payload": payload,
-    }
-    with OUTPUT_PATH.open("w", encoding="utf-8") as handle:
-        json.dump(output, handle, indent=2, ensure_ascii=True)
-
-
-async def run() -> None:
-    log("Starting add-on")
-    log("Reading configuration")
-    config = read_config()
-
-    credentials = prompt_for_credentials(config)
-    login = credentials.get("login", "").strip()
-    password = credentials.get("password", "")
-
-    if not login or not password:
-        raise RuntimeError("Login and password are required")
-
+async def fetch_token(login: str, password: str) -> Dict[str, Any]:
     log("Logging in")
     jwt_token = await retrieve_jwt(login, password)
     log("Token extracted")
@@ -319,7 +354,54 @@ async def run() -> None:
     if not tenant:
         raise RuntimeError("Tenant field not found in JWT payload")
 
-    write_token_file(jwt_token, str(tenant), payload)
+    return {"jwt": jwt_token, "payload": payload, "tenant": str(tenant)}
+
+
+async def fetch_token_with_retry(login: str, password: str) -> Dict[str, Any]:
+    last_error: Optional[Exception] = None
+    for attempt in range(2):
+        try:
+            return await fetch_token(login, password)
+        except Exception as exc:
+            last_error = exc
+            remove_token_file()
+            if attempt == 0:
+                log("Token fetch failed, retrying once")
+            else:
+                break
+
+    raise RuntimeError("Failed to fetch token") from last_error
+
+
+async def run() -> None:
+    log("Starting add-on")
+
+    try:
+        existing = read_existing_token()
+    except Exception as exc:
+        log(f"Existing token invalid: {exc}")
+        remove_token_file()
+        existing = None
+
+    if existing:
+        if existing.get("needs_write"):
+            write_token_file(
+                existing["jwt"], existing["tenant"], existing["payload"]
+            )
+        log("Using existing token")
+        return
+
+    env_login = os.getenv("LOGIN", "")
+    env_password = os.getenv("PASSWORD", "")
+    credentials = prompt_for_credentials(env_login, env_password)
+    login = credentials.get("login", "").strip()
+    password = credentials.get("password", "")
+
+    if not login or not password:
+        raise RuntimeError("Login and password are required")
+
+    token_data = await fetch_token_with_retry(login, password)
+    write_token_file(token_data["jwt"], token_data["tenant"], token_data["payload"])
     log("File written to /config/eduvulcan_token.json")
 
 

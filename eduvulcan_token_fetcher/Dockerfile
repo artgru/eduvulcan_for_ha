@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM ghcr.io/home-assistant/base:latest
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -16,4 +16,4 @@ COPY app /app
 COPY run.sh /run.sh
 RUN chmod +x /run.sh
 
-CMD ["/run.sh"]
+ENTRYPOINT ["/run.sh"]
