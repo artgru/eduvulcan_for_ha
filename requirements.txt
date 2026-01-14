@@ -1,0 +1,14 @@
+# IRIS API client (eduVULCAN / VULCAN)
+git+https://github.com/bbrjpl1310b/iris.git
+
+# HTTP + async
+aiohttp
+
+# Modele danych
+pydantic
+
+# Do dekodowania JWT (base64, json są wbudowane w Pythona, ale czasem przyda się też to)
+pyjwt
+
+# Do logowania przez Captchę
+playwright
