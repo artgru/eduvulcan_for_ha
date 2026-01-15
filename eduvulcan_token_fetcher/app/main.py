@@ -4,7 +4,6 @@ import json
 import os
 import sys
 import time
-from getpass import getpass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
@@ -17,25 +16,6 @@ LOGIN_URL = "https://eduvulcan.pl/api/ap"
 
 def log(message: str) -> None:
     print(message, flush=True)
-
-
-def prompt_for_credentials(login: str, password: str) -> Dict[str, str]:
-    login_value = login.strip()
-    password_value = password
-
-    if login_value and password_value:
-        return {"login": login_value, "password": password_value}
-
-    log("Login or password missing; entering interactive mode")
-    if not login_value:
-        login_value = input("Login: ").strip()
-    if not password_value:
-        try:
-            password_value = getpass("Password: ")
-        except Exception:
-            password_value = input("Password: ")
-
-    return {"login": login_value, "password": password_value}
 
 
 def is_jwt(value: Any) -> bool:
@@ -401,7 +381,7 @@ async def wait_for_captcha(page) -> None:
     if not needs_attention:
         return
 
-    log("CAPTCHA detected. Please solve it manually in the browser.")
+    log("CAPTCHA detected; waiting for completion.")
 
     await page.wait_for_function(
         """(selectors) => {
@@ -430,10 +410,9 @@ async def wait_for_captcha(page) -> None:
 
 
 async def retrieve_jwt(login: str, password: str) -> str:
-    headful = os.getenv("HEADFUL", "").strip() in {"1", "true", "True"}
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(
-            headless=not headful, args=["--no-sandbox"]
+            headless=True, args=["--no-sandbox"]
         )
         context = await browser.new_context()
         page = await context.new_page()
@@ -447,6 +426,7 @@ async def retrieve_jwt(login: str, password: str) -> str:
         await fill_login(page, login)
         await click_next(page)
         await wait_for_user_info(page)
+        await remove_overlay(page)
 
         await wait_for_any_selector(
             page,
@@ -455,6 +435,7 @@ async def retrieve_jwt(login: str, password: str) -> str:
         )
         await fill_password(page, password)
         await wait_for_captcha(page)
+        await remove_overlay(page)
         await submit_login(page)
 
         try:
@@ -522,14 +503,15 @@ async def run() -> None:
         log("Using existing token")
         return
 
-    env_login = os.getenv("LOGIN", "")
+    env_login = os.getenv("LOGIN", "").strip()
     env_password = os.getenv("PASSWORD", "")
-    credentials = prompt_for_credentials(env_login, env_password)
-    login = credentials.get("login", "").strip()
-    password = credentials.get("password", "")
-
-    if not login or not password:
-        raise RuntimeError("Login and password are required")
+    if not env_login or not env_password:
+        log(
+            "Login or password missing; set them in the add-on configuration options."
+        )
+        return
+    login = env_login
+    password = env_password
 
     token_data = await fetch_token_with_retry(login, password)
     write_token_file(token_data["jwt"], token_data["tenant"], token_data["payload"])
