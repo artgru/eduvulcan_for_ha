@@ -1,0 +1,14 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "eduVULCAN login",
+        "description": "Podaj dane do logowania",
+        "data": {
+          "login": "Login (e-mail)",
+          "password": "Hasło"
+        }
+      }
+    }
+  }
+}

@@ -290,3 +290,4 @@ pyrightconfig.json
 
 #eduvulcan ignore file
 eduvulcan_token.json
+eduvulcan_storage.json

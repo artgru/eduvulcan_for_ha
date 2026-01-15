@@ -1,0 +1,13 @@
+{
+  "domain": "eduvulcan",
+  "name": "eduVULCAN Calendar",
+  "version": "1.0.1",
+  "documentation": "https://github.com/andrzejf1994/eduvulcan_for_ha",
+  "requirements": [
+    "playwright",
+    "git+https://github.com/bbrjpl1310b/iris.git"
+  ],
+  "dependencies": [],
+  "codeowners": ["@andrzejf1994"],
+  "config_flow": true
+}
