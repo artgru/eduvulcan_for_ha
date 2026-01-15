@@ -1,13 +1,15 @@
 {
   "domain": "eduvulcan",
   "name": "eduVULCAN Calendar",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "documentation": "https://github.com/andrzejf1994/eduvulcan_for_ha",
+  "issue_tracker": "https://github.com/andrzejf1994/eduvulcan_for_ha/issues",
   "requirements": [
     "playwright",
-    "git+https://github.com/bbrjpl1310b/iris.git"
+    "iris @ git+https://github.com/bbrjpl1310b/iris.git"
   ],
   "dependencies": [],
   "codeowners": ["@andrzejf1994"],
-  "config_flow": true
+  "config_flow": true,
+  "iot_class": "cloud_polling"
 }

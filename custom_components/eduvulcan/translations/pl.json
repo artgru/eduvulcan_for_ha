@@ -1,0 +1,25 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Logowanie do eduVULCAN",
+        "description": "Podaj dane do logowania.",
+        "data": {
+          "login": "Login (e-mail)",
+          "password": "Hasło"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Ponowne logowanie eduVULCAN",
+        "description": "Zaktualizuj dane logowania do eduVULCAN.",
+        "data": {
+          "login": "Login (e-mail)",
+          "password": "Hasło"
+        }
+      }
+    },
+    "abort": {
+      "reauth_successful": "Ponowne logowanie zakończone powodzeniem."
+    }
+  }
+}
