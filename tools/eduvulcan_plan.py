@@ -11,6 +11,7 @@ from iris.credentials import RsaCredential
 from iris.api import IrisHebeCeApi
 
 TOKEN_FILE = "eduvulcan_token.json"
+STORAGE_FILE = "eduvulcan_storage.json"
 EDUVULCAN_URL = "https://eduvulcan.pl/api/ap"
 
 # ======================================================
@@ -56,7 +57,7 @@ def ask_credentials():
     return login, password
 
 # ======================================================
-# POBIERANIE JWT Z EDUVULCAN
+# POBIERANIE JWT Z EDUVULCAN (Z OBSŁUGĄ COOKIES)
 # ======================================================
 
 async def fetch_new_token(login: str, password: str):
@@ -67,11 +68,18 @@ async def fetch_new_token(login: str, password: str):
             headless=True,
             args=["--no-sandbox", "--disable-setuid-sandbox"]
         )
-        context = await browser.new_context()
+
+        # Jeśli mamy zapisane cookies / localStorage – użyj ich
+        if os.path.exists(STORAGE_FILE):
+            print("🍪 Wczytuję zapisane cookies / sesję...")
+            context = await browser.new_context(storage_state=STORAGE_FILE)
+        else:
+            context = await browser.new_context()
+
         page = await context.new_page()
 
         try:
-            # 1️⃣ Wejście na stronę logowania
+            # 1️⃣ Wejście na stronę
             await page.goto(EDUVULCAN_URL, wait_until="networkidle")
 
             # 2️⃣ Usunięcie overlay cookies / privacy
@@ -80,32 +88,39 @@ async def fetch_new_token(login: str, password: str):
                 if (el) el.remove();
             """)
 
-            # 3️⃣ Login
-            await page.wait_for_selector("#Alias", timeout=30000)
-            await page.fill("#Alias", login)
-            await page.click("#btNext")
-
-            # 4️⃣ Hasło
-            await page.wait_for_selector("#Password", timeout=30000)
-            await page.fill("#Password", password)
-
-            # 5️⃣ Captcha (jeśli się pojawi)
+            # 3️⃣ Sprawdzenie czy jesteśmy już zalogowani
             try:
-                await page.wait_for_selector("#captcha", state="visible", timeout=5000)
-                await page.wait_for_function(
-                    "document.querySelector('#captcha-response') && document.querySelector('#captcha-response').value !== ''",
-                    timeout=30000
-                )
+                await page.wait_for_selector("#ap", timeout=5000)
+                print("♻ Sesja aktywna – token dostępny bez logowania.")
             except:
-                pass
+                print("🔑 Brak aktywnej sesji – wykonuję logowanie...")
 
-            # 6️⃣ Zaloguj
-            await page.click("#btLogOn")
+                # Login
+                await page.wait_for_selector("#Alias", timeout=30000)
+                await page.fill("#Alias", login)
+                await page.click("#btNext")
 
-            # 7️⃣ Czekaj aż pojawi się input z tokenem
-            await page.wait_for_selector("#ap", state="attached", timeout=60000)
+                # Hasło
+                await page.wait_for_selector("#Password", timeout=30000)
+                await page.fill("#Password", password)
 
-            # 8️⃣ Odczyt tokena
+                # Captcha (jeśli się pojawi)
+                try:
+                    await page.wait_for_selector("#captcha", state="visible", timeout=5000)
+                    await page.wait_for_function(
+                        "document.querySelector('#captcha-response') && document.querySelector('#captcha-response').value !== ''",
+                        timeout=30000
+                    )
+                except:
+                    pass
+
+                # Zaloguj
+                await page.click("#btLogOn")
+
+                # Czekaj aż pojawi się token
+                await page.wait_for_selector("#ap", state="attached", timeout=60000)
+
+            # 4️⃣ Odczyt tokena
             token_json = await page.eval_on_selector("#ap", "el => el.value")
             data = json.loads(token_json)
 
@@ -119,7 +134,7 @@ async def fetch_new_token(login: str, password: str):
             if not tenant:
                 raise RuntimeError("Nie udało się odczytać tenant z JWT")
 
-            # 9️⃣ Zapis do pliku
+            # 5️⃣ Zapis tokena
             with open(TOKEN_FILE, "w", encoding="utf-8") as f:
                 json.dump(
                     {
@@ -131,6 +146,10 @@ async def fetch_new_token(login: str, password: str):
                     indent=2,
                     ensure_ascii=False
                 )
+
+            # 6️⃣ Zapis cookies / localStorage
+            await context.storage_state(path=STORAGE_FILE)
+            print("🍪 Sesja zapisana do pliku.")
 
             print(f"✅ Token pobrany poprawnie (tenant: {tenant})")
             return jwt, tenant
@@ -211,7 +230,6 @@ async def main():
     print(" eduVULCAN – pobieranie planu lekcji")
     print("==========================================\n")
 
-    # ====== PYTANIE O DATY ======
     print("Podaj zakres dat (format: RRRR-MM-DD).")
     start_date = ask_date("Data OD (Enter = dziś): ", default=date.today())
     end_date = ask_date("Data DO (Enter = taka sama jak OD): ", default=start_date)
@@ -222,7 +240,6 @@ async def main():
 
     print(f"\n➡ Zakres: {start_date} → {end_date}\n")
 
-    # ====== LOGIKA TOKENA ======
     for attempt in (1, 2):
         try:
             if os.path.exists(TOKEN_FILE):
