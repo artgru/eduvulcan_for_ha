@@ -3,12 +3,23 @@
     "step": {
       "user": {
         "title": "eduVULCAN login",
-        "description": "Podaj dane do logowania",
+        "description": "Enter your eduVULCAN credentials.",
         "data": {
           "login": "Login (e-mail)",
-          "password": "Hasło"
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate eduVULCAN",
+        "description": "Update your eduVULCAN credentials.",
+        "data": {
+          "login": "Login (e-mail)",
+          "password": "Password"
         }
       }
+    },
+    "abort": {
+      "reauth_successful": "Re-authentication was successful."
     }
   }
 }

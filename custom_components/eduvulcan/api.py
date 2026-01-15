@@ -1,14 +1,18 @@
-import os
-import json
 import base64
+import json
+import os
 from datetime import date
-from collections import defaultdict
 
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 from iris.credentials import RsaCredential
 from iris.api import IrisHebeCeApi
 
-from .const import TOKEN_FILE, STORAGE_FILE, EDUVULCAN_URL
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.storage import Store
+
+from .const import CONF_LOGIN, CONF_PASSWORD, DOMAIN, STORAGE_FILE, EDUVULCAN_URL
 
 
 def decode_jwt_payload(jwt: str) -> dict:
@@ -26,23 +30,24 @@ def school_year_start(today: date) -> date:
 
 
 class EduVulcanAPI:
-    def __init__(self, hass, login: str, password: str):
+    def __init__(self, hass, entry: ConfigEntry):
         self.hass = hass
-        self.login = login
-        self.password = password
+        self.entry = entry
         self.config_dir = hass.config.path()
-
-        self.token_path = os.path.join(self.config_dir, TOKEN_FILE)
         self.storage_path = os.path.join(self.config_dir, STORAGE_FILE)
+        self.store = Store(hass, 1, f"{DOMAIN}_token_{entry.entry_id}")
 
-    async def _fetch_new_token(self):
+    async def _fetch_new_token(self) -> tuple[str, str]:
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
                 args=["--no-sandbox", "--disable-setuid-sandbox"]
             )
 
-            if os.path.exists(self.storage_path):
+            storage_exists = await self.hass.async_add_executor_job(
+                os.path.exists, self.storage_path
+            )
+            if storage_exists:
                 context = await browser.new_context(storage_state=self.storage_path)
             else:
                 context = await browser.new_context()
@@ -59,13 +64,13 @@ class EduVulcanAPI:
 
                 try:
                     await page.wait_for_selector("#ap", timeout=5000)
-                except:
+                except PlaywrightTimeoutError:
                     await page.wait_for_selector("#Alias", timeout=30000)
-                    await page.fill("#Alias", self.login)
+                    await page.fill("#Alias", self.entry.data[CONF_LOGIN])
                     await page.click("#btNext")
 
                     await page.wait_for_selector("#Password", timeout=30000)
-                    await page.fill("#Password", self.password)
+                    await page.fill("#Password", self.entry.data[CONF_PASSWORD])
                     await page.click("#btLogOn")
 
                     await page.wait_for_selector("#ap", state="attached", timeout=60000)
@@ -78,13 +83,7 @@ class EduVulcanAPI:
                 payload = decode_jwt_payload(jwt)
                 tenant = payload.get("tenant")
 
-                with open(self.token_path, "w", encoding="utf-8") as f:
-                    json.dump(
-                        {"tenant": tenant, "jwt": jwt},
-                        f,
-                        indent=2,
-                        ensure_ascii=False
-                    )
+                await self.store.async_save({"tenant": tenant, "jwt": jwt})
 
                 await context.storage_state(path=self.storage_path)
                 return jwt, tenant
@@ -92,10 +91,14 @@ class EduVulcanAPI:
             finally:
                 await browser.close()
 
-    def _load_token(self):
-        with open(self.token_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+    async def _load_token(self) -> tuple[str, str]:
+        data = await self.store.async_load()
+        if not data:
+            raise ValueError("Missing token data")
         return data["jwt"], data["tenant"]
+
+    async def _register_api(self, api: IrisHebeCeApi, jwt: str, tenant: str) -> None:
+        await api.register_by_jwt(tokens=[jwt], tenant=tenant)
 
     async def get_schedule(self):
         today = date.today()
@@ -103,7 +106,7 @@ class EduVulcanAPI:
         end_date = today
 
         try:
-            jwt, tenant = self._load_token()
+            jwt, tenant = await self._load_token()
         except Exception:
             jwt, tenant = await self._fetch_new_token()
 
@@ -111,7 +114,15 @@ class EduVulcanAPI:
         api = IrisHebeCeApi(credential)
 
         try:
-            await api.register_by_jwt(tokens=[jwt], tenant=tenant)
+            try:
+                await self._register_api(api, jwt, tenant)
+            except Exception:
+                jwt, tenant = await self._fetch_new_token()
+                try:
+                    await self._register_api(api, jwt, tenant)
+                except Exception as err:
+                    raise ConfigEntryAuthFailed from err
+
             accounts = await api.get_accounts()
             account = accounts[0]
 

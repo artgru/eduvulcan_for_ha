@@ -19,3 +19,16 @@ python3 -m pip install -r requirements.txt
 ```
 
 See [docs](./docs/getting-started.md).
+
+## Home Assistant integration (eduVULCAN)
+
+This repository contains a Home Assistant custom integration under
+`custom_components/eduvulcan` for exposing eduVULCAN lessons as a calendar entity.
+Install it via HACS or copy the integration into your Home Assistant
+`custom_components` directory.
+
+### HACS releases
+
+HACS requires tagged releases with a semantic version (e.g. `1.0.2`) that matches the
+`version` field in `custom_components/eduvulcan/manifest.json`. Make sure to create a
+GitHub release for each new version so HACS can download the integration.
