@@ -26,7 +26,7 @@ def prompt_for_credentials(login: str, password: str) -> Dict[str, str]:
     if login_value and password_value:
         return {"login": login_value, "password": password_value}
 
-    log("Prompting for credentials")
+    log("Login or password missing; entering interactive mode")
     if not login_value:
         login_value = input("Login: ").strip()
     if not password_value:
@@ -166,6 +166,10 @@ def write_token_file(jwt_token: str, tenant: str, payload: Dict[str, Any]) -> No
         json.dump(output, handle, indent=2, ensure_ascii=True)
 
 
+def build_selector_list(values: Iterable[str]) -> str:
+    return ", ".join(values)
+
+
 async def click_if_present(page, selector: str, timeout_ms: int = 1000) -> bool:
     locator = page.locator(selector)
     try:
@@ -269,12 +273,37 @@ async def fill_by_selectors(
     raise RuntimeError(f"Could not find {field_name} field")
 
 
+async def wait_for_any_selector(page, selectors: Iterable[str], timeout_ms: int) -> str:
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        for selector in selectors:
+            locator = page.locator(selector)
+            try:
+                count = await locator.count()
+            except Exception:
+                continue
+            if count == 0:
+                continue
+            try:
+                if await locator.first.is_visible():
+                    return selector
+            except Exception:
+                continue
+        await page.wait_for_timeout(200)
+
+    raise RuntimeError(
+        f"Timed out waiting for selectors: {build_selector_list(selectors)}"
+    )
+
+
 async def fill_login(page, login: str) -> None:
     labels = ["Login", "E-mail", "Email", "Nazwa uzytkownika", "Uzytkownik"]
     if await fill_by_labels(page, labels, login):
         return
 
     selectors = [
+        "input#Alias",
+        "input[name='Alias']",
         "input[name='login']",
         "input#login",
         "input[name='email']",
@@ -291,6 +320,8 @@ async def fill_password(page, password: str) -> None:
         return
 
     selectors = [
+        "input#Password",
+        "input[name='Password']",
         "input[type='password']",
         "input[name='password']",
         "input#password",
@@ -298,8 +329,26 @@ async def fill_password(page, password: str) -> None:
     await fill_by_selectors(page, selectors, password, "password")
 
 
+async def click_next(page) -> None:
+    selectors = [
+        "#btNext",
+        "button#btNext",
+        "button:has-text('Dalej')",
+        "button:has-text('Next')",
+    ]
+    for selector in selectors:
+        if await click_if_present(page, selector, timeout_ms=5000):
+            return
+
+    raise RuntimeError("Could not find next button")
+
+
 async def submit_login(page) -> None:
     selectors = [
+        "#btLogIn",
+        "#btLogin",
+        "button#btLogIn",
+        "button#btLogin",
         "button[type='submit']",
         "input[type='submit']",
         "button:has-text('Zaloguj')",
@@ -314,15 +363,98 @@ async def submit_login(page) -> None:
     raise RuntimeError("Could not find submit button")
 
 
-async def retrieve_jwt(login: str, password: str) -> str:
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True, args=["--no-sandbox"])
-        page = await browser.new_page()
-        await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+async def wait_for_user_info(page) -> None:
+    try:
+        await page.wait_for_response(
+            lambda response: "/Account/QueryUserInfo" in response.url
+            and response.request.method == "POST",
+            timeout=15000,
+        )
+    except PlaywrightTimeoutError:
+        log("User info verification did not finish within timeout")
 
+
+async def wait_for_captcha(page) -> None:
+    captcha_selectors = [
+        "#captcha",
+        "#captcha-response",
+        "[name*='captcha']",
+        "[id*='captcha']",
+        "iframe[src*='captcha']",
+    ]
+    needs_attention = False
+    for selector in captcha_selectors:
+        locator = page.locator(selector)
+        try:
+            count = await locator.count()
+        except Exception:
+            continue
+        if count == 0:
+            continue
+        try:
+            if await locator.first.is_visible():
+                needs_attention = True
+                break
+        except Exception:
+            continue
+
+    if not needs_attention:
+        return
+
+    log("CAPTCHA detected. Please solve it manually in the browser.")
+
+    await page.wait_for_function(
+        """(selectors) => {
+        const elements = selectors
+          .map((selector) => document.querySelector(selector))
+          .filter(Boolean);
+        if (elements.length === 0) {
+          return true;
+        }
+        for (const el of elements) {
+          const style = window.getComputedStyle(el);
+          const visible =
+            style && style.display !== 'none' && style.visibility !== 'hidden';
+          if (visible && el.offsetParent !== null) {
+            const value = (el.value || '').trim();
+            if (!value) {
+              return false;
+            }
+          }
+        }
+        return true;
+      }""",
+        captcha_selectors,
+        timeout=600000,
+    )
+
+
+async def retrieve_jwt(login: str, password: str) -> str:
+    headful = os.getenv("HEADFUL", "").strip() in {"1", "true", "True"}
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(
+            headless=not headful, args=["--no-sandbox"]
+        )
+        context = await browser.new_context()
+        page = await context.new_page()
+
+        await page.goto(LOGIN_URL, wait_until="domcontentloaded")
         await remove_overlay(page)
+
+        await wait_for_any_selector(
+            page, ["#Alias", "input[name='Alias']", "input#login"], timeout_ms=20000
+        )
         await fill_login(page, login)
+        await click_next(page)
+        await wait_for_user_info(page)
+
+        await wait_for_any_selector(
+            page,
+            ["#Password", "input[name='Password']", "input[type='password']"],
+            timeout_ms=20000,
+        )
         await fill_password(page, password)
+        await wait_for_captcha(page)
         await submit_login(page)
 
         try:
@@ -340,6 +472,7 @@ async def retrieve_jwt(login: str, password: str) -> str:
             raise RuntimeError("Token payload is not valid JSON") from exc
 
         jwt_token = extract_jwt(ap_data)
+        await context.close()
         await browser.close()
         return jwt_token
 
@@ -385,9 +518,7 @@ async def run() -> None:
 
     if existing:
         if existing.get("needs_write"):
-            write_token_file(
-                existing["jwt"], existing["tenant"], existing["payload"]
-            )
+            write_token_file(existing["jwt"], existing["tenant"], existing["payload"])
         log("Using existing token")
         return
 
